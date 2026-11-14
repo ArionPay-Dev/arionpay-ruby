@@ -58,6 +58,26 @@ jobs:
       - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3'
-      - uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
+      # Trusted publishing: swap this job's GitHub OIDC token for a push-only rubygems.org key
+      # that expires after 15 minutes. "owner" names the rubygems.org account (immutable ID)
+      # whose pending trusted publisher may create the gem; rubygems.org rejects a first push without it.
+      - name: Get a short-lived RubyGems key
+        env:
+          RUBYGEMS_OWNER: '256090'
+        run: |
+          jwt=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=rubygems.org" | jq -r .value)
+          echo "::add-mask::$jwt"
+          resp=$(jq -n --arg jwt "$jwt" --arg owner "$RUBYGEMS_OWNER" '{jwt: $jwt, owner: $owner}' |
+            curl -sS -X POST -H 'Content-Type: application/json' --data @- \
+              https://rubygems.org/api/v1/oidc/trusted_publisher/exchange_token)
+          key=$(printf '%s' "$resp" | jq -r '.rubygems_api_key // empty')
+          if [ -z "$key" ]; then
+            echo "Token exchange refused: $(printf '%s' "$resp" | jq -c . 2>/dev/null || printf '%s' "$resp")"
+            exit 1
+          fi
+          echo "::add-mask::$key"
+          printf '%s' "$resp" | jq -c 'del(.rubygems_api_key)'
+          echo "GEM_HOST_API_KEY=$key" >> "$GITHUB_ENV"
       - name: Push to rubygems.org
         run: gem push arionpay-*.gem
